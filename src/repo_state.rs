@@ -343,7 +343,68 @@ impl Package {
     }
 
     fn get_git_hash(&self, version: &str, upstream: &UpstreamEntry) -> String {
-        // GitHub API call to get commit hash for version
+        #[derive(Debug, serde::Deserialize)]
+        struct GitHubTag {
+            name: String,
+            commit: GitHubCommit,
+        }
+
+        #[derive(Debug, serde::Deserialize)]
+        struct GitHubCommit {
+            sha: String,
+        }
+
+        let client = reqwest::blocking::Client::new();
+        let clean_url = upstream.url.trim_start_matches("git|");
+
+        if !clean_url.contains("github.com") {
+            eprintln!("Non-GitHub git source for {}", self.path.display());
+            // TODO: Add a path for other git forges
+            return String::new();
+        }
+
+        // Extract owner/repo from GitHub URL
+        let parts: Vec<&str> = clean_url.split("/").collect();
+        if parts.len() < 5 {
+            eprintln!("Invalide GitHub URL format: {clean_url}");
+            return String::new();
+        }
+
+        let owner = parts[3];
+        let repo = parts[4].trim_end_matches(".git");
+
+        // Get tags from GitHub API
+        let github_api_url = format!("https://api.github.com/repos/{owner}/{repo}/tags");
+
+        match client
+            .get(&github_api_url)
+            .header("User-Agent", "boulderd/0.1.0")
+            .send()
+        {
+            Ok(response) => {
+                if response.status().is_success() {
+                    if let Ok(tags) = response.json::<Vec<GitHubTag>>() {
+                        // Try to extract the version match
+                        for tag in &tags {
+                            if tag.name == version || tag.name == format!("v{version}") {
+                                return tag.commit.sha.clone();
+                            }
+                        }
+
+                        // If no exact match, return the latest tag's commit
+                        if let Some(latest_tag) = tags.first() {
+                            return latest_tag.commit.sha.clone();
+                        }
+                    }
+                } else {
+                    eprintln!(
+                        "GitHub API request failed with status: {}",
+                        response.status()
+                    );
+                }
+            }
+            Err(e) => eprintln!("GitHub API error for {}: {e}", self.path.display()),
+        }
 
         // Return String::new() if fails
         String::new()
